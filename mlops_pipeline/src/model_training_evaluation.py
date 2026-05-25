@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from model_monitoring import guardar_referencia
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.neighbors import KNeighborsClassifier
@@ -324,6 +325,7 @@ def seleccionar_y_guardar(df_resultados: pd.DataFrame, X_test, y_test) -> str:
 if __name__ == '__main__':
     print("Cargando y transformando datos...")
     X_train, X_test, y_train, y_test, _ = preparar_datos()
+    guardar_referencia(X_train)
 
     print("\nEntrenando modelos...")
     df_resultados = entrenar_y_evaluar(X_train, X_test, y_train, y_test)
