@@ -14,7 +14,7 @@ La métrica principal adoptada es el **ROC-AUC** (equivalente al coeficiente de 
 
 ### EDA
 
-- El dataset contiene 10763 registros con 23 variables originales.
+- El dataset contiene 10.763 registros con 23 variables originales.
 - Se identificaron **3 variables con data leakage**: `saldo_mora` y `saldo_mora_codeudor` (miden directamente la mora, que es el target) y `puntaje` (score interno generado post-otorgamiento).
 - Las variables con mayor diferencia de distribución entre clases son `huella_consulta`, `creditos_sectorReal` y `tendencia_ingresos`.
 - Variables como `saldo_total`, `saldo_principal` y `promedio_ingresos_datacredito` presentan alta asimetría positiva → se aplica transformación log1p.
@@ -50,6 +50,14 @@ Se compararon 4 modelos con las métricas obtenidas en el set de test:
 
 El recall bajo en la clase minoritaria (mora) es consistente con la naturaleza del dataset: los predictores disponibles al momento del otorgamiento tienen poder discriminativo moderado, lo cual es esperable en riesgo crediticio sin historial de comportamiento previo del cliente.
 
+**Métricas**  
+En este proyecto el objetivo de negocio no es predecir bien en general, sino detectar los créditos que van a caer en mora antes de que ocurran. Por lo cual se priorizan las métricas ROC-AUC y Recall.
+
+ROC-AUC mide qué tan bien el modelo ordena a los clientes por nivel de riesgo, independientemente del umbral que se elija para tomar la decisión final. Un AUC de 0.677 significa que el modelo distingue correctamente el orden de riesgo entre dos clientes al azar el 67,7% de las veces, lo cual tiene valor operativo real aunque el número parezca moderado.
+
+Recall de la clase mora mide cuántos casos de mora reales logra capturar el modelo. Como solo el 5% del dataset es mora, un modelo que ignore completamente esa clase obtiene 95% de accuracy igual. El accuracy es entonces una métrica engañosa que no sirve. Lo que puede costar al banco es el falso negativo: aprobar un crédito que después no se paga. Por eso el recall sobre la clase minoritaria es la métrica operativa más directa, aunque mejorarla tiene un costo: aumenta los falsos positivos (clientes solventes clasificados como riesgo), lo que se gestiona ajustando el threshold. 
+
+
 ### Monitoreo
 
 Se implementó un sistema de monitoreo de **data drift** con muestreo periódico mensual. Las métricas calculadas son:
@@ -72,6 +80,10 @@ Resultados de la simulación de 6 períodos:
 
 A partir del período 2025-03 se recomienda reentrenamiento del modelo dado que el drift supera el umbral crítico de PSI > 0.20 en múltiples variables.
 
+### Despliegue
+
+Se implementó una API REST con FastAPI que expone el modelo entrenado como servicio de predicción. La API soporta predicción por lotes vía JSON y carga de archivos CSV, e incluye health check y documentación interactiva automática (Swagger UI). El servicio fue containerizado con Docker para garantizar reproducibilidad en cualquier entorno.
+
 ---
 
 ## Estructura del proyecto
@@ -86,7 +98,8 @@ mlops_pipeline/
 │       ├── ft_engineering.py            # Pipeline de feature engineering
 │       ├── model_training_evaluation.py # Entrenamiento y evaluación de modelos
 │       ├── model_monitoring.py          # Detección de data drift
-│       └── app_streamlit.py             # Dashboard de monitoreo
+│       ├── app_streamlit.py             # Dashboard de monitoreo
+│       └── model_deploy.py              # API REST de predicción (FastAPI)
 │
 ├── models/
 │   └── best_model.joblib               # Modelo y threshold serializados
@@ -95,9 +108,9 @@ mlops_pipeline/
 │   ├── reference_stats.pkl             # Estadísticas de referencia (train)
 │   └── drift_log.csv                   # Log histórico de drift por período
 │
-│
-│
 ├── Base_de_datos.xlsx                  # Dataset original
+├── Dockerfile                          # Imagen Docker para despliegue
+├── .dockerignore
 ├── requirements.txt
 └── README.md
 ```
@@ -117,10 +130,13 @@ pip install -r requirements.txt
 ```
 pandas
 numpy
-scikit-learn>=1.8.0
+scikit-learn>=1.3.0
 imbalanced-learn
 joblib
 scipy
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
 streamlit
 plotly
 openpyxl
@@ -164,22 +180,235 @@ Abre la aplicación web de monitoreo en `http://localhost:8501`.
 
 ---
 
+### 5. API de predicción
+
+La API expone el modelo de Gradient Boosting como servicio REST con FastAPI. Soporta predicción individual y por lotes vía JSON o archivo CSV.
+
+#### Opción A — Uvicorn directo (desarrollo)
+
+```bash
+uvicorn mlops_pipeline.src.model_deploy:app --host 0.0.0.0 --port 8000 --reload
+```
+
+La API queda disponible en `http://localhost:8000`. La documentación interactiva (Swagger UI) se abre en `http://localhost:8000/docs`.
+
+#### Opción B — Docker (producción)
+
+```bash
+# Construir la imagen
+docker build -t mlops-credit-api .
+
+# Ejecutar el contenedor
+docker run -p 8000:8000 mlops-credit-api
+```
+
+Para sobreescribir el threshold desde fuera del contenedor:
+
+```bash
+docker run -p 8000:8000 -e PREDICT_THRESHOLD=0.50 mlops-credit-api
+```
+
+#### Endpoints disponibles
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/` | Información general del servicio |
+| GET | `/health` | Estado del servicio y modelo |
+| GET | `/features` | Lista de features que espera el modelo |
+| POST | `/predict` | Predicción por lotes vía JSON |
+| POST | `/predict/csv` | Predicción por lotes vía archivo CSV |
+
+#### Ejemplo formato de entrada (POST /predict)
+
+```json
+{
+  "records": [
+    {
+      "_descripcion": "CASO 1 — Bajo riesgo",
+      "capital_prestado": 8000000,
+      "plazo_meses": 36,
+      "edad_cliente": 42,
+      "salario_cliente": 4500000,
+      "total_otros_prestamos": 1,
+      "cuota_pactada": 280000,
+      "cant_creditosvigentes": 2,
+      "huella_consulta": 1,
+      "creditos_sectorFinanciero": 1,
+      "creditos_sectorCooperativo": 0,
+      "creditos_sectorReal": 1,
+      "año_prestamo": 2024,
+      "mes_prestamo": 3,
+      "puntaje_datacredito": 720,
+      "ratio_carga_financiera": 0.06,
+      "saldo_total": 6500000,
+      "saldo_principal": 5000000,
+      "promedio_ingresos_datacredito": 4200000,
+      "tipo_credito_4": 1,
+      "tipo_credito_6": 0,
+      "tipo_credito_7": 0,
+      "tipo_credito_9": 0,
+      "tipo_credito_10": 0,
+      "tipo_credito_68": 0,
+      "tipo_laboral_Empleado": 1,
+      "tipo_laboral_Independiente": 0,
+      "tendencia_ingresos": 3
+    },
+    {
+      "_descripcion": "CASO 2 - Mora Extrema",
+      "capital_prestado": 35000000,
+      "plazo_meses": 72,
+      "edad_cliente": 26,
+      "salario_cliente": 900000,
+      "total_otros_prestamos": 12,
+      "cuota_pactada": 850000,
+      "cant_creditosvigentes": 15,
+      "huella_consulta": 18,
+      "creditos_sectorFinanciero": 5,
+      "creditos_sectorCooperativo": 4,
+      "creditos_sectorReal": 8,
+      "año_prestamo": 2024,
+      "mes_prestamo": 11,
+      "puntaje_datacredito": 300,
+      "ratio_carga_financiera": 0.94,
+      "saldo_total": 68000000,
+      "saldo_principal": 55000000,
+      "promedio_ingresos_datacredito": 800000,
+      "tipo_credito_4": 0,
+      "tipo_credito_6": 1,
+      "tipo_credito_7": 1,
+      "tipo_credito_9": 1,
+      "tipo_credito_10": 0,
+      "tipo_credito_68": 1,
+      "tipo_laboral_Empleado": 0,
+      "tipo_laboral_Independiente": 1,
+      "tendencia_ingresos": 0
+    },
+    {
+      "_descripcion": "CASO 3 — Riesgo intermedio",
+      "capital_prestado": 5000000,
+      "plazo_meses": 24,
+      "edad_cliente": 35,
+      "salario_cliente": 2800000,
+      "total_otros_prestamos": 3,
+      "cuota_pactada": 310000,
+      "cant_creditosvigentes": 4,
+      "huella_consulta": 4,
+      "creditos_sectorFinanciero": 2,
+      "creditos_sectorCooperativo": 0,
+      "creditos_sectorReal": 2,
+      "año_prestamo": 2024,
+      "mes_prestamo": 6,
+      "puntaje_datacredito": 580,
+      "ratio_carga_financiera": 0.11,
+      "saldo_total": 9000000,
+      "saldo_principal": 7000000,
+      "promedio_ingresos_datacredito": 2500000,
+      "tipo_credito_4": 0,
+      "tipo_credito_6": 0,
+      "tipo_credito_7": 0,
+      "tipo_credito_9": 1,
+      "tipo_credito_10": 0,
+      "tipo_credito_68": 0,
+      "tipo_laboral_Empleado": 1,
+      "tipo_laboral_Independiente": 0,
+      "tendencia_ingresos": 2
+    }
+  ]
+}
+```
+
+Los campos faltantes se imputan automáticamente con la mediana o moda según el tipo de variable.
+
+#### Respuesta esperada
+```json
+{
+  "total_records": 3,
+  "threshold_used": 0.5,
+  "predictions": [
+    {
+      "record_index": 0,
+      "probability_mora": 0.369026,
+      "prediction": 1,
+      "risk_label": "PAGO_A_TIEMPO"
+    },
+    {
+      "record_index": 1,
+      "probability_mora": 0.520748,
+      "prediction": 0,
+      "risk_label": "MORA"
+    },
+    {
+      "record_index": 2,
+      "probability_mora": 0.33809,
+      "prediction": 1,
+      "risk_label": "PAGO_A_TIEMPO"
+    }
+  ],
+  "summary": {
+    "predicciones_mora": 1,
+    "predicciones_pago_a_tiempo": 2,
+    "tasa_mora_estimada": 0.3333
+  }
+}
+
+```
+
+
+#### Codificación de tendencia_ingresos
+
+La variable `tendencia_ingresos` fue codificada ordinalmente durante el entrenamiento. La API acepta tanto el número como el string:
+
+| String | Valor numérico |
+|---|---|
+| `"Decreciente"` | 0 |
+| `"Sin_historial"` | 1 |
+| `"Estable"` | 2 |
+| `"Creciente"` | 3 |
+
+#### Configuración del threshold
+
+El modelo fue entrenado con un threshold óptimo de **0.75** (maximiza la detección de mora). Este valor se carga automáticamente desde `models/best_model.joblib`.
+
+Para sobreescribir el threshold sin reconstruir la imagen:
+
+```bash
+# Con uvicorn
+set PREDICT_THRESHOLD=0.50
+uvicorn mlops_pipeline.src.model_deploy:app --host 0.0.0.0 --port 8000
+
+# Con Docker
+docker run -p 8000:8000 -e PREDICT_THRESHOLD=0.50 mlops-credit-api
+```
+
+> **Nota sobre el threshold:** El valor 0.75 está optimizado para producción (prioriza precisión sobre recall en mora). En demos o testing se puede bajar a 0.50 para observar clasificaciones de mora, dado que el modelo tiene ROC-AUC = 0.677 y las probabilidades rara vez superan 0.55 incluso en perfiles de alto riesgo.
+
+---
+
 ## Versionado
 
-| Tag | Descripción |
-|---|---|
-| V1.0.0 | Initial commit |
-| V1.0.1 | Carga de datos y EDA |
-| V1.1.0 | Feature engineering, model training y modelo serializado |
+| Tag | Rama | Descripción |
+|---|---|---|
+| V1.0.0 | main | Initial commit |
+| V1.0.1 | main | Carga de datos y EDA |
+| V1.0 | certification | Certificación V1.0 |
+| V1.1.0 | main | Feature engineering, model training y modelo serializado |
+| V1.1 | certification | Certificación V1.1 |
+| V1.2.0 | main | Monitoreo de drift y dashboard Streamlit |
+| V1.2 | certification | Certificación V1.2 |
+| V1.3.0 | main | API REST de predicción (FastAPI + Docker) — merge a main con certificación final |
+| V1.3 | certification | Certificación V1.3 |
 
 ---
 
 ## Tecnologías
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **scikit-learn** — pipelines, modelos, métricas
 - **imbalanced-learn** — SMOTE
 - **scipy** — tests estadísticos (KS, Chi-cuadrado, Jensen-Shannon)
 - **streamlit** — dashboard interactivo
 - **plotly** — visualizaciones
 - **joblib** — serialización de modelos
+- **FastAPI + Uvicorn** — API REST de predicción
+- **Pydantic v2** — validación de esquemas de entrada/salida
+- **Docker** — contenedor para despliegue reproducible

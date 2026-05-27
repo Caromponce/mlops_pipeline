@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# .dockerignore — excluye archivos innecesarios de la imagen Docker
+# ---------------------------------------------------------------------------
+
+# Control de versiones
+.git/
+.gitignore
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+.env/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Notebooks (no necesarios en producción)
+*.ipynb
+.ipynb_checkpoints/
+
+# Archivos de datos crudos (el dataset no va en la imagen)
+*.csv
+*.xlsx
+*.xls
+Base_de_datos.*
+
+# Archivos de logs locales
+*.log
+drift_log.csv
+
+# Archivos de entorno y configuración local
+.env
+*.env
+.env.*
+
+# Herramientas de desarrollo
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tests
+tests/
+test_*
+*_test.py
+
+# Documentación
+README.md
+docs/
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# Archivos temporales
+tmp/
+temp/
+*.tmp
